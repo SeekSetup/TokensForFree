@@ -323,7 +323,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	s.engine.GET("/management", func(c *gin.Context) {
+		c.Redirect(http.StatusTemporaryRedirect, "/management.html")
+	})
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/management-assets/*filepath", s.serveManagementStaticAsset)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -710,6 +714,51 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+func (s *Server) serveManagementStaticAsset(c *gin.Context) {
+	cfg := s.cfg
+	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	staticDir := managementasset.StaticDir(s.configFilePath)
+	if strings.TrimSpace(staticDir) == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	rawPath := strings.TrimPrefix(c.Param("filepath"), "/")
+	if strings.TrimSpace(rawPath) == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	cleaned := filepath.Clean(rawPath)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+
+	assetPath := filepath.Join(staticDir, cleaned)
+	rel, err := filepath.Rel(staticDir, assetPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+
+	if _, err = os.Stat(assetPath); err != nil {
+		if os.IsNotExist(err) {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		log.WithError(err).Error("failed to stat management static asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	c.File(assetPath)
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
